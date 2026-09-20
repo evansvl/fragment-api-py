@@ -39,6 +39,10 @@ class ConfigurationError(ClientError):
         f"Invalid mnemonic phrase: expected "
         f"{', '.join(str(n) for n in sorted(MNEMONIC_WORD_COUNTS_VALID))} words, got {{count}}."
     )
+    INVALID_MNEMONIC_TYPE = (
+        "Unsupported mnemonic type '{mnemonic_type}'. Supported values: auto, bip39, ton."
+    )
+    INVALID_ACCOUNT_INDEX = "account_index must be a non-negative integer."
     UNSUPPORTED_PROVIDER = "Unsupported API provider '{provider}'. Supported values: {supported}."
     UNSUPPORTED_METHOD = (
         "EVM payment methods are not supported for '{item_type}' purchases. "
@@ -113,6 +117,19 @@ class ConfigurationError(ClientError):
     )
 
 
+class InvalidMnemonicError(ConfigurationError):
+    """Raised when a mnemonic is invalid for the selected derivation scheme."""
+
+
+class AmbiguousMnemonicError(ConfigurationError):
+    """Raised when auto detection cannot safely select a derivation scheme."""
+
+    MESSAGE = (
+        "This 24-word mnemonic is valid as both TON-native and BIP39. "
+        "Set mnemonic_type='ton' or mnemonic_type='bip39' explicitly."
+    )
+
+
 ConfigError = ConfigurationError
 
 
@@ -140,6 +157,10 @@ class CookieError(ClientError):
     REFRESH_FAILED = (
         "Failed to refresh Fragment session cookies: {exc}. "
         "Manual re-authentication may be required."
+    )
+    AUTO_REFRESH_FAILED = (
+        "Fragment authentication did not return required cookie(s): {missing}. "
+        "Complete Telegram OAuth and try again."
     )
 
 
@@ -316,6 +337,8 @@ __all__ = [
     "FragmentError",
     "ClientError",
     "ConfigurationError",
+    "InvalidMnemonicError",
+    "AmbiguousMnemonicError",
     "ConfigError",
     "CookieError",
     "FragmentAPIError",

@@ -20,7 +20,6 @@ from typing import Any
 
 from curl_cffi import requests
 from nacl.signing import SigningKey
-from ton_core import NetworkGlobalID
 
 from FragmentAPI.exceptions import (
     CookieError,
@@ -31,9 +30,10 @@ from FragmentAPI.types.constants import (
     BASE_HEADERS,
     DEFAULT_TIMEOUT,
     FRAGMENT_BASE_URL,
+    MnemonicType,
     REQUIRED_COOKIE_KEYS_WALLET,
-    WALLET_CLASSES,
 )
+from FragmentAPI.utils.mnemonic import derive_wallet_material
 
 logger = logging.getLogger("FragmentAPI")
 
@@ -61,13 +61,6 @@ BROWSER_HEADERS: dict[str, str] = {
 }
 
 
-class OfflineClient:
-    """Minimal offline client interface for tonutils wallet construction."""
-
-    def __init__(self):
-        self.network = NetworkGlobalID.MAINNET
-
-
 def _parse_init_page(html: str) -> tuple[str, str]:
     """Parse ajInit hash and ton_proof payload from Fragment homepage HTML."""
     match_aj = re.search(r"ajInit\((.*?)\);", html)
@@ -92,6 +85,8 @@ def _generate_proof(
     mnemonic: list[str],
     wallet_version: str,
     ton_proof_payload: str,
+    mnemonic_type: MnemonicType = "auto",
+    account_index: int = 0,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     """Generate TON proof data for Fragment authentication.
 
@@ -106,12 +101,15 @@ def _generate_proof(
     Returns:
         Tuple of (account_data, device_data, proof_data) dicts.
     """
-    wallet_cls = WALLET_CLASSES.get(wallet_version.upper(), WALLET_CLASSES["V5R1"])
-
-    wallet, pub_key, priv_key, _ = wallet_cls.from_mnemonic(
-        client=OfflineClient(),
-        mnemonic=" ".join(mnemonic),
+    derived = derive_wallet_material(
+        " ".join(mnemonic),
+        mnemonic_type=mnemonic_type,
+        account_index=account_index,
+        wallet_version=wallet_version,
     )
+    wallet = derived.wallet
+    pub_key = derived.public_key
+    priv_key = derived.private_key
 
     def _extract_key_bytes(obj: Any) -> bytes:
         """Extract raw bytes from various tonutils key representations."""
@@ -318,6 +316,8 @@ async def auth_ton_proof(
     seed: str,
     wallet_version: str = "V5R1",
     timeout: float = DEFAULT_TIMEOUT,
+    mnemonic_type: MnemonicType = "auto",
+    account_index: int = 0,
 ) -> dict[str, str]:
     """Authenticate with Fragment exclusively via TON Proof using the seed phrase.
 
@@ -331,6 +331,12 @@ async def auth_ton_proof(
     Returns:
         Dict of session cookies obtained from the TON Proof flow.
     """
+    derive_wallet_material(
+        seed,
+        mnemonic_type=mnemonic_type,
+        account_index=account_index,
+        wallet_version=wallet_version,
+    )
     async with requests.AsyncSession(
         timeout=timeout,
         impersonate="chrome120",
@@ -349,7 +355,7 @@ async def auth_ton_proof(
         api_hash, ton_proof_payload = _parse_init_page(resp.text)
         mnemonic = seed.strip().split()
         account_data, device_data, proof_data = _generate_proof(
-            mnemonic, wallet_version, ton_proof_payload,
+            mnemonic, wallet_version, ton_proof_payload, mnemonic_type, account_index,
         )
 
         form_data = {
@@ -381,6 +387,8 @@ async def refresh_wallet_session(
     seed: str,
     wallet_version: str = "V5R1",
     timeout: float = DEFAULT_TIMEOUT,
+    mnemonic_type: MnemonicType = "auto",
+    account_index: int = 0,
 ) -> dict[str, str]:
     """Refresh session cookies using seed phrase only.
 
@@ -399,6 +407,8 @@ async def refresh_wallet_session(
     cookies = await auth_ton_proof(
         seed=seed,
         wallet_version=wallet_version,
+        mnemonic_type=mnemonic_type,
+        account_index=account_index,
         timeout=timeout,
     )
 
@@ -420,6 +430,8 @@ async def authenticate(
     print_qr: bool = True,
     on_status: Any = None,
     timeout: float = DEFAULT_TIMEOUT,
+    mnemonic_type: MnemonicType = "auto",
+    account_index: int = 0,
 ) -> dict[str, str]:
     """Perform full Fragment authentication and return session cookies.
 
@@ -443,6 +455,14 @@ async def authenticate(
         FragmentPageError: If Fragment homepage cannot be loaded.
         UnexpectedError: If authentication flow fails.
     """
+    # Fail before any HTTP request so mnemonic-selection errors remain typed and
+    # no network activity occurs for invalid or ambiguous secrets.
+    derive_wallet_material(
+        seed,
+        mnemonic_type=mnemonic_type,
+        account_index=account_index,
+        wallet_version=wallet_version,
+    )
     logger.info("Starting Fragment authentication with wallet version %s", wallet_version)
 
     try:
@@ -466,7 +486,7 @@ async def authenticate(
 
             mnemonic = seed.strip().split()
             account_data, device_data, proof_data = _generate_proof(
-                mnemonic, wallet_version, ton_proof_payload,
+                mnemonic, wallet_version, ton_proof_payload, mnemonic_type, account_index,
             )
 
             form_data = {

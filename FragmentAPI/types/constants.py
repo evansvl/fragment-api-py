@@ -20,6 +20,8 @@ from tonutils.contracts.wallet import (
 )
 
 WalletVersionType = Literal["V4R2", "V5R1"]
+MnemonicType = Literal["auto", "ton", "bip39"]
+SUPPORTED_MNEMONIC_TYPES: frozenset[str] = frozenset(get_args(MnemonicType))
 SUPPORTED_WALLET_VERSIONS: frozenset[str] = frozenset(
     get_args(WalletVersionType),
 )

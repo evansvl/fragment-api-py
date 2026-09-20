@@ -18,6 +18,9 @@ Operating modes:
 
 from __future__ import annotations
 
+import asyncio
+import functools
+import inspect
 import json
 import logging
 import re
@@ -72,6 +75,7 @@ from FragmentAPI.types.constants import (
     MY_GIFTS_PAGE,
     MY_NUMBERS_PAGE,
     MY_USERNAMES_PAGE,
+    MnemonicType,
     NFT_WITHDRAW_PAGE,
     NOKYC_PAYMENT_METHODS,
     NUMBERS_PAGE,
@@ -142,6 +146,7 @@ from FragmentAPI.types.models import (
     UsernameInfo,
     UsernamesResult,
     WalletInfo,
+    DerivedWalletInfo,
 )
 from FragmentAPI.utils.auth import authenticate
 from FragmentAPI.utils.html import (
@@ -183,6 +188,11 @@ from FragmentAPI.utils.nokyc import (
     nokyc_recharge_ads,
     nokyc_search_recipient,
     nokyc_topup_gram,
+)
+from FragmentAPI.utils.mnemonic import (
+    derive_wallet as derive_wallet_public,
+    derive_wallet_accounts as derive_wallet_accounts_public,
+    resolve_mnemonic_type,
 )
 from FragmentAPI.utils.proxy import build_curl_proxy_args, parse_proxy
 from FragmentAPI.utils.wallet import (
@@ -247,6 +257,8 @@ class FragmentClient:
         session_id: str | None = None,
         auto_refresh_cookies: bool = False,
         marketapp_token: str | None = None,
+        mnemonic_type: MnemonicType = "auto",
+        account_index: int = 0,
     ) -> None:
         self.cookies: dict[str, str] | None = None
         self.timeout: float = timeout
@@ -257,10 +269,13 @@ class FragmentClient:
         self.api_key: str | None = None
         self.api_provider: str = "tonapi"
         self.wallet_version: str = "V5R1"
+        self.mnemonic_type: str = str(mnemonic_type).lower()
+        self.account_index: int = account_index
         self.proxy: str | None = None
         self._session_storage: SessionStorage | None = session_storage
         self._session_id: str | None = session_id
         self._auto_refresh: bool = auto_refresh_cookies
+        self._refresh_lock = asyncio.Lock()
         self.marketapp_token: str = (
             marketapp_token.strip() if marketapp_token and marketapp_token.strip()
             else DEFAULT_MARKETAPP_TOKEN
@@ -312,6 +327,19 @@ class FragmentClient:
                     ConfigurationError.INVALID_MNEMONIC.format(count=word_count)
                 )
             self.seed = seed.strip()
+            self.mnemonic_type = resolve_mnemonic_type(self.seed, self.mnemonic_type)
+        elif self.mnemonic_type not in ("auto", "ton", "bip39"):
+            raise ConfigurationError(
+                ConfigurationError.INVALID_MNEMONIC_TYPE.format(
+                    mnemonic_type=self.mnemonic_type
+                )
+            )
+        if (
+            isinstance(account_index, bool)
+            or not isinstance(account_index, int)
+            or not 0 <= account_index < 0x80000000
+        ):
+            raise ConfigurationError(ConfigurationError.INVALID_ACCOUNT_INDEX)
 
         if api_key and str(api_key).strip():
             self.api_key = api_key.strip()
@@ -420,6 +448,8 @@ class FragmentClient:
             seed=self.seed,
             wallet_version=self.wallet_version,
             timeout=self.timeout,
+            mnemonic_type=self.mnemonic_type,
+            account_index=self.account_index,
         )
 
         self.cookies = new_cookies
@@ -443,12 +473,17 @@ class FragmentClient:
         proxy: str | None = None,
         auto_refresh_cookies: bool = False,
         marketapp_token: str | None = None,
+        mnemonic_type: MnemonicType = "auto",
+        account_index: int = 0,
     ) -> "FragmentClient":
         """Create a FragmentClient from stored session cookies."""
         cookies = await session_storage.load(session_id)
         if not cookies:
             if seed:
-                cookies = await authenticate(seed=seed, wallet_version=wallet_version, timeout=timeout)
+                cookies = await authenticate(
+                    seed=seed, wallet_version=wallet_version, timeout=timeout,
+                    mnemonic_type=mnemonic_type, account_index=account_index,
+                )
                 await session_storage.save(session_id, cookies)
             else:
                 raise CookieError(
@@ -467,6 +502,8 @@ class FragmentClient:
             session_id=session_id,
             auto_refresh_cookies=auto_refresh_cookies,
             marketapp_token=marketapp_token,
+            mnemonic_type=mnemonic_type,
+            account_index=account_index,
         )
 
     async def __aenter__(self) -> "FragmentClient":
@@ -479,6 +516,8 @@ class FragmentClient:
         return (
             f"FragmentClient("
             f"wallet_version='{self.wallet_version}', "
+            f"mnemonic_type='{self.mnemonic_type}', "
+            f"account_index={self.account_index}, "
             f"api_provider='{self.api_provider}', "
             f"seed={'set' if self.seed else 'none'}, "
             f"api_key={'set' if self.api_key else 'none'}, "
@@ -496,11 +535,44 @@ class FragmentClient:
         print_qr: bool = True,
         on_status: Any = None,
         timeout: float = DEFAULT_TIMEOUT,
+        mnemonic_type: MnemonicType = "auto",
+        account_index: int = 0,
     ) -> dict[str, str]:
         """Authenticate with Fragment and return session cookies."""
         return await authenticate(
             seed=seed, wallet_version=wallet_version,
             phone=phone, print_qr=print_qr, on_status=on_status, timeout=timeout,
+            mnemonic_type=mnemonic_type, account_index=account_index,
+        )
+
+    @staticmethod
+    def derive_wallet(
+        seed: str,
+        mnemonic_type: MnemonicType = "auto",
+        account_index: int = 0,
+        wallet_version: str = "V5R1",
+    ) -> DerivedWalletInfo:
+        """Return public wallet details without login or network access."""
+        return derive_wallet_public(
+            seed,
+            mnemonic_type=mnemonic_type,
+            account_index=account_index,
+            wallet_version=wallet_version,
+        )
+
+    @staticmethod
+    def derive_wallet_accounts(
+        seed: str,
+        start_index: int = 0,
+        count: int = 10,
+        wallet_version: str = "V5R1",
+    ) -> list[DerivedWalletInfo]:
+        """Return public details for consecutive BIP39 accounts offline."""
+        return derive_wallet_accounts_public(
+            seed,
+            start_index=start_index,
+            count=count,
+            wallet_version=wallet_version,
         )
 
 
@@ -1824,3 +1896,52 @@ class FragmentClient:
                 session, fragment_hash, headers,
                 {"method": method, **(data or {})},
             )
+
+
+def _is_expired_session_error(exc: Exception) -> bool:
+    """Return whether an operation failed because Fragment auth expired."""
+    if not isinstance(exc, FragmentError) or isinstance(exc, ConfigurationError):
+        return False
+    message = str(exc).lower()
+    return any(
+        marker in message
+        for marker in (
+            "http 401",
+            "http 403",
+            "session expired",
+            "session cookie expired",
+            "not logged in",
+            "unauthorized",
+            "authentication required",
+        )
+    )
+
+
+def _auto_refresh_method(method: Any) -> Any:
+    """Retry one public client operation after one synchronized cookie refresh."""
+
+    @functools.wraps(method)
+    async def wrapped(self: FragmentClient, *args: Any, **kwargs: Any) -> Any:
+        cookies_before = self.cookies
+        try:
+            return await method(self, *args, **kwargs)
+        except Exception as exc:
+            if not self._auto_refresh or not self.seed or not _is_expired_session_error(exc):
+                raise
+            async with self._refresh_lock:
+                if self.cookies is cookies_before:
+                    await self.refresh_cookies()
+            return await method(self, *args, **kwargs)
+
+    return wrapped
+
+
+# Public async methods use one common refresh policy. The retry calls the
+# original method directly, so a second auth failure is returned without a loop.
+for _method_name, _method in list(vars(FragmentClient).items()):
+    if (
+        not _method_name.startswith("_")
+        and _method_name not in {"authenticate", "from_storage", "refresh_cookies"}
+        and inspect.iscoroutinefunction(_method)
+    ):
+        setattr(FragmentClient, _method_name, _auto_refresh_method(_method))

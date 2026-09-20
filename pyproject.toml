@@ -18,7 +18,8 @@ dependencies = [
     "pydantic>=2.0",
     "selectolax>=0.3.0",
     "aiofiles>=23.0",
-    "marketapp-api>=1.0.1"
+    "marketapp-api>=1.0.1",
+    "bip-utils>=2.9.3",
 ]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
@@ -37,6 +38,8 @@ classifiers = [
 [project.optional-dependencies]
 dev = [
     "python-semantic-release>=9.0.0",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
 ]
 
 [tool.flit.module]

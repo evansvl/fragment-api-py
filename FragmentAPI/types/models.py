@@ -135,6 +135,9 @@ class WalletInfo(FragmentBaseModel):
     state: str
     gram_balance: float
     usdt_balance: float
+    wallet_version: str | None = None
+    mnemonic_type: str | None = None
+    account_index: int | None = None
 
     @property
     def balance_ton(self) -> float:
@@ -155,6 +158,16 @@ class WalletInfo(FragmentBaseModel):
             f"usdt_balance={self.usdt_balance}"
             f")"
         )
+
+
+class DerivedWalletInfo(FragmentBaseModel):
+    """Public, offline wallet derivation result (never contains private keys)."""
+
+    address: str
+    public_key: str
+    wallet_version: str
+    mnemonic_type: str
+    account_index: int
 
 
 class RecipientInfo(FragmentBaseModel):

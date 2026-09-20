@@ -61,11 +61,14 @@ from FragmentAPI.types.models import (
     UsernameInfo,
     UsernamesResult,
     WalletInfo,
+    DerivedWalletInfo,
 )
 from FragmentAPI.exceptions import (
+    AmbiguousMnemonicError,
     AlreadySubscribedError,
     AnonymousNumberError,
     ConfigurationError,
+    InvalidMnemonicError,
     CookieError,
     FragmentAPIError,
     FragmentError,
@@ -82,6 +85,7 @@ from FragmentAPI.exceptions import (
     VerificationError,
     WalletError,
 )
+from FragmentAPI.utils.mnemonic import derive_wallet, derive_wallet_accounts
 
 __version__ = "12.1.0"
 __author__ = "S1qwy"
@@ -90,6 +94,11 @@ __email__ = "S1qwy@internet.ru"
 __all__ = [
     "__version__",
     "FragmentClient",
+    "derive_wallet",
+    "derive_wallet_accounts",
+    "DerivedWalletInfo",
+    "AmbiguousMnemonicError",
+    "InvalidMnemonicError",
     "SessionStorage",
     "FileSessionStorage",
     "RedisSessionStorage",

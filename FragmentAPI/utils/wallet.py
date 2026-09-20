@@ -18,7 +18,7 @@ from typing import (
     Any,
 )
 
-from ton_core import Cell, NetworkGlobalID
+from ton_core import Cell, NetworkGlobalID, StateInit
 from tonutils.clients import TonapiClient, ToncenterClient
 from tonutils.contracts.jetton import get_wallet_address_get_method, get_wallet_data_get_method
 from tonutils.exceptions import ProviderResponseError
@@ -37,13 +37,13 @@ from FragmentAPI.types.constants import (
     SUPPORTED_API_PROVIDERS,
     TONAPI_BASE_URL,
     USDT_TON_MASTER_ADDRESS,
-    WALLET_CLASSES,
 )
 from FragmentAPI.types.results import (
     TransactionResult,
     WalletInfo,
 )
 from FragmentAPI.utils.decoder import decode_boc_comment
+from FragmentAPI.utils.mnemonic import derive_wallet_material
 
 if TYPE_CHECKING:
     from FragmentAPI.client import FragmentClient
@@ -142,7 +142,7 @@ async def _wait_confirmation(
 
 def _parse_messages(
     messages: list[dict[str, Any]],
-) -> tuple[list[str], list[int], list[Any]]:
+) -> tuple[list[str], list[int], list[Any], list[StateInit | None]]:
     """Parse Fragment transaction messages into parallel lists.
 
     Converts Fragment's message format into destinations, amounts, and
@@ -152,11 +152,12 @@ def _parse_messages(
         messages: List of message dicts from Fragment transaction payload.
 
     Returns:
-        Tuple of (destinations, amounts, bodies).
+        Tuple of (destinations, amounts, bodies, state_inits).
     """
     destinations: list[str] = []
     amounts: list[int] = []
     bodies: list[Any] = []
+    state_inits: list[StateInit | None] = []
 
     for msg in messages:
         destinations.append(msg["address"])
@@ -175,7 +176,16 @@ def _parse_messages(
 
         bodies.append(payload)
 
-    return destinations, amounts, bodies
+        raw_state_init = msg.get("stateInit") or msg.get("state_init")
+        if raw_state_init:
+            encoded = str(raw_state_init).strip().replace("-", "+").replace("_", "/")
+            encoded += "=" * (-len(encoded) % 4)
+            state_init_cell = Cell.one_from_boc(base64.b64decode(encoded))
+            state_inits.append(StateInit.deserialize(state_init_cell.begin_parse()))
+        else:
+            state_inits.append(None)
+
+    return destinations, amounts, bodies, state_inits
 
 
 async def _broadcast_with_retry(
@@ -183,6 +193,7 @@ async def _broadcast_with_retry(
     destinations: list[str],
     amounts: list[int],
     bodies: list[Any],
+    state_inits: list[StateInit | None],
 ) -> Any:
     """Broadcast a transaction with retry logic for rate limits and seqno conflicts.
 
@@ -205,9 +216,17 @@ async def _broadcast_with_retry(
             await wallet.refresh()
 
             if len(destinations) > 1:
-                result = await _batch_transfer(wallet, destinations, amounts, bodies)
+                result = await _batch_transfer(
+                    wallet, destinations, amounts, bodies, state_inits
+                )
             else:
-                result = await _single_transfer(wallet, destinations[0], amounts[0], bodies[0])
+                result = await _single_transfer(
+                    wallet,
+                    destinations[0],
+                    amounts[0],
+                    bodies[0],
+                    state_inits[0],
+                )
 
             return result
 
@@ -237,7 +256,13 @@ async def _broadcast_with_retry(
     )
 
 
-async def _single_transfer(wallet: Any, destination: str, amount: int, body: Any) -> Any:
+async def _single_transfer(
+    wallet: Any,
+    destination: str,
+    amount: int,
+    body: Any,
+    state_init: StateInit | None = None,
+) -> Any:
     """Execute a single wallet transfer.
 
     Tries modern tonutils API first, falls back to legacy.
@@ -250,12 +275,16 @@ async def _single_transfer(wallet: Any, destination: str, amount: int, body: Any
                 destination=Address(destination) if isinstance(destination, str) else destination,
                 amount=amount,
                 body=body,
+                state_init=state_init,
             )
             return await wallet.transfer_message(builder)
         except ImportError:
             pass
 
-    return await wallet.transfer(destination=destination, amount=amount, body=body)
+    kwargs = {"destination": destination, "amount": amount, "body": body}
+    if state_init is not None:
+        kwargs["state_init"] = state_init
+    return await wallet.transfer(**kwargs)
 
 
 async def _batch_transfer(
@@ -263,6 +292,7 @@ async def _batch_transfer(
     destinations: list[str],
     amounts: list[int],
     bodies: list[Any],
+    state_inits: list[StateInit | None],
 ) -> Any:
     """Execute a batch wallet transfer with multiple messages.
 
@@ -276,12 +306,15 @@ async def _batch_transfer(
             from ton_core import Address
 
             builders = []
-            for d, a, b in zip(destinations, amounts, bodies):
+            for d, a, b, state_init in zip(
+                destinations, amounts, bodies, state_inits
+            ):
                 builders.append(
                     TONTransferBuilder(
                         destination=Address(d) if isinstance(d, str) else d,
                         amount=a,
                         body=b,
+                        state_init=state_init,
                     )
                 )
             result = await wallet.batch_transfer_message(builders)
@@ -292,13 +325,23 @@ async def _batch_transfer(
         batch_msgs = []
         try:
             from tonutils.wallet.messages import TransferMessage
-            for d, a, b in zip(destinations, amounts, bodies):
-                batch_msgs.append(TransferMessage(destination=d, amount=a / 1e9, body=b))
+            for d, a, b, state_init in zip(
+                destinations, amounts, bodies, state_inits
+            ):
+                kwargs = {"destination": d, "amount": a / 1e9, "body": b}
+                if state_init is not None:
+                    kwargs["state_init"] = state_init
+                batch_msgs.append(TransferMessage(**kwargs))
         except ImportError:
             try:
                 from tonutils.wallet.data import TransferData
-                for d, a, b in zip(destinations, amounts, bodies):
-                    batch_msgs.append(TransferData(destination=d, amount=a / 1e9, body=b))
+                for d, a, b, state_init in zip(
+                    destinations, amounts, bodies, state_inits
+                ):
+                    kwargs = {"destination": d, "amount": a / 1e9, "body": b}
+                    if state_init is not None:
+                        kwargs["state_init"] = state_init
+                    batch_msgs.append(TransferData(**kwargs))
             except ImportError:
                 pass
 
@@ -387,8 +430,13 @@ async def _run_transaction(
     total_amount_gram = sum(int(msg["amount"]) for msg in messages) / 1_000_000_000
 
     async with _make_ton_client(client) as ton:
-        wallet_cls = WALLET_CLASSES[client.wallet_version]
-        wallet, _, _, _ = wallet_cls.from_mnemonic(client=ton, mnemonic=client.seed)
+        wallet = derive_wallet_material(
+            client.seed,
+            mnemonic_type=client.mnemonic_type,
+            account_index=client.account_index,
+            wallet_version=client.wallet_version,
+            client=ton,
+        ).wallet
 
         if not skip_balance_check:
             try:
@@ -412,7 +460,7 @@ async def _run_transaction(
                     WalletError.GRAM_BALANCE_CHECK_FAILED.format(exc=exc)
                 ) from exc
 
-        destinations, amounts, bodies = _parse_messages(messages)
+        destinations, amounts, bodies, state_inits = _parse_messages(messages)
 
         try:
             await wallet.refresh()
@@ -427,7 +475,9 @@ async def _run_transaction(
         )
 
         try:
-            result = await _broadcast_with_retry(wallet, destinations, amounts, bodies)
+            result = await _broadcast_with_retry(
+                wallet, destinations, amounts, bodies, state_inits
+            )
             tx_hash, boc_b64 = _extract_tx_result(result)
         except (TransactionError, WalletError):
             raise
@@ -521,8 +571,14 @@ async def build_account_info(client: "FragmentClient") -> dict[str, Any]:
     """
     async with _make_ton_client(client) as ton:
         try:
-            wallet_cls = WALLET_CLASSES[client.wallet_version]
-            wallet, pub_key, _, _ = wallet_cls.from_mnemonic(client=ton, mnemonic=client.seed)
+            derived = derive_wallet_material(
+                client.seed,
+                mnemonic_type=client.mnemonic_type,
+                account_index=client.account_index,
+                wallet_version=client.wallet_version,
+                client=ton,
+            )
+            wallet, pub_key = derived.wallet, derived.public_key
             boc = wallet.state_init.serialize().to_boc()
             return {
                 "address": wallet.address.to_str(False, False),
@@ -551,8 +607,14 @@ async def fetch_wallet_info(client: "FragmentClient") -> WalletInfo:
     """
     async with _make_ton_client(client) as ton:
         try:
-            wallet_cls = WALLET_CLASSES[client.wallet_version]
-            wallet, _, _, _ = wallet_cls.from_mnemonic(client=ton, mnemonic=client.seed)
+            derived = derive_wallet_material(
+                client.seed,
+                mnemonic_type=client.mnemonic_type,
+                account_index=client.account_index,
+                wallet_version=client.wallet_version,
+                client=ton,
+            )
+            wallet = derived.wallet
             await wallet.refresh()
 
             wallet_address = wallet.address.to_str(False, False)
@@ -572,6 +634,9 @@ async def fetch_wallet_info(client: "FragmentClient") -> WalletInfo:
                 state=wallet.state.value,
                 gram_balance=gram_balance,
                 usdt_balance=round(usdt_balance, 4),
+                wallet_version=derived.wallet_version,
+                mnemonic_type=derived.mnemonic_type,
+                account_index=derived.account_index,
             )
         except WalletError:
             raise

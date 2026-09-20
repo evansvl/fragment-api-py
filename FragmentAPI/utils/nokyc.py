@@ -57,6 +57,7 @@ from FragmentAPI.types.models import (
     StarsPrice,
     TransactionResult,
 )
+from FragmentAPI.utils.wallet import execute_transaction
 
 if TYPE_CHECKING:
     from FragmentAPI.client import FragmentClient
@@ -68,8 +69,11 @@ def _build_marketapp_client(client: "FragmentClient") -> MarketappClient:
     """Create a MarketappClient instance from FragmentClient configuration."""
     return MarketappClient(
         api_token=client.marketapp_token,
-        seed=client.seed,
-        api_key=client.api_key,
+        # MarketApp only builds unsigned transactions. Signing stays local so
+        # multichain account selection cannot diverge and secrets are never
+        # passed to another client implementation.
+        seed=None,
+        api_key=None,
         api_provider=client.api_provider,
         wallet_version=client.wallet_version,
         timeout=client.timeout,
@@ -117,17 +121,11 @@ def _send_tx_to_prepared(
     )
 
 
-def _tx_result_from_marketapp(result: Any) -> TransactionResult:
-    """Convert MarketApp TransactionResult to FragmentAPI TransactionResult."""
-    return TransactionResult(
-        tx_hash=getattr(result, "tx_hash", ""),
-        boc=getattr(result, "boc", None),
-        seqno_before=getattr(result, "seqno_before", None),
-        seqno_after=getattr(result, "seqno_after", None),
-        balance_before=getattr(result, "balance_before", None),
-        balance_after=getattr(result, "balance_after", None),
-        confirmed=getattr(result, "confirmed", False),
-    )
+async def _execute_marketapp_transaction(
+    client: "FragmentClient", result: Any
+) -> TransactionResult:
+    raw = result.model_dump(by_alias=True) if hasattr(result, "model_dump") else {}
+    return await execute_transaction(client, raw)
 
 
 async def nokyc_get_stars_price(client: "FragmentClient", quantity: int) -> StarsPrice:
@@ -256,10 +254,10 @@ async def nokyc_purchase_stars(
         )
 
         auto_pay = client.has_wallet
-        result = await mc.buy_stars(body, auto_pay=auto_pay)
+        result = await mc.buy_stars(body, auto_pay=False)
 
         if auto_pay:
-            tx = _tx_result_from_marketapp(result)
+            tx = await _execute_marketapp_transaction(client, result)
             return PurchaseResult(
                 transaction_id=tx.tx_hash,
                 type="stars",
@@ -296,10 +294,10 @@ async def nokyc_purchase_premium(
         )
 
         auto_pay = client.has_wallet
-        result = await mc.buy_premium(body, auto_pay=auto_pay)
+        result = await mc.buy_premium(body, auto_pay=False)
 
         if auto_pay:
-            tx = _tx_result_from_marketapp(result)
+            tx = await _execute_marketapp_transaction(client, result)
             return PurchaseResult(
                 transaction_id=tx.tx_hash,
                 type="premium",
@@ -336,10 +334,10 @@ async def nokyc_topup_gram(
         )
 
         auto_pay = client.has_wallet
-        result = await mc.telegram_topup(body, auto_pay=auto_pay)
+        result = await mc.telegram_topup(body, auto_pay=False)
 
         if auto_pay:
-            tx = _tx_result_from_marketapp(result)
+            tx = await _execute_marketapp_transaction(client, result)
             return PurchaseResult(
                 transaction_id=tx.tx_hash,
                 type="gram",
@@ -376,10 +374,10 @@ async def nokyc_recharge_ads(
         )
 
         auto_pay = client.has_wallet
-        result = await mc.ads_topup(body, auto_pay=auto_pay)
+        result = await mc.ads_topup(body, auto_pay=False)
 
         if auto_pay:
-            tx = _tx_result_from_marketapp(result)
+            tx = await _execute_marketapp_transaction(client, result)
             return AdsRechargeResult(
                 transaction_id=tx.tx_hash,
                 account_id=account_id,
@@ -412,10 +410,10 @@ async def nokyc_giveaway_stars(
         )
 
         auto_pay = client.has_wallet
-        result = await mc.buy_stars_giveaway(body, auto_pay=auto_pay)
+        result = await mc.buy_stars_giveaway(body, auto_pay=False)
 
         if auto_pay:
-            tx = _tx_result_from_marketapp(result)
+            tx = await _execute_marketapp_transaction(client, result)
             return GiveawayStarsResult(
                 transaction_id=tx.tx_hash,
                 channel=channel,
@@ -453,10 +451,10 @@ async def nokyc_giveaway_premium(
         )
 
         auto_pay = client.has_wallet
-        result = await mc.buy_premium_giveaway(body, auto_pay=auto_pay)
+        result = await mc.buy_premium_giveaway(body, auto_pay=False)
 
         if auto_pay:
-            tx = _tx_result_from_marketapp(result)
+            tx = await _execute_marketapp_transaction(client, result)
             return GiveawayPremiumResult(
                 transaction_id=tx.tx_hash,
                 channel=channel,
