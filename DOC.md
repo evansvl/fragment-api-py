@@ -14,6 +14,7 @@ Complete reference for **fragment-api-py v12.1.0**.
   - [Session Storage](#session-storage)
   - [Properties](#properties)
 - [Authentication](#authentication)
+- [Multichain / Keeper / Tonkeeper BIP39 Wallets](#multichain--keeper--tonkeeper-bip39-wallets)
 - [Payment Methods](#payment-methods)
 - [API Methods](#api-methods)
   - [Wallet](#wallet)
@@ -305,6 +306,33 @@ cookies = await FragmentClient.authenticate(
 6. Polls until user confirms, then finalizes login.
 
 ---
+
+## Multichain / Keeper / Tonkeeper BIP39 Wallets
+
+Keeper multichain wallets use BIP39 with SLIP-0010 Ed25519 at
+`m/44'/607'/{account_index}'`; their main TON account is normally index `0`.
+Choose `mnemonic_type="bip39"` explicitly when importing a Keeper seed:
+
+```python
+client = FragmentClient(
+    cookies=cookies,
+    seed=os.environ["TON_WALLET_SEED"],
+    api_key=os.environ["TON_API_KEY"],
+    wallet_version="V5R1",
+    mnemonic_type="bip39",
+    account_index=0,
+)
+```
+
+`mnemonic_type="auto"` maps a valid 12-word phrase to BIP39. For 24 words,
+the library validates both the TON-native KDF and BIP39; phrases valid for both
+raise `AmbiguousMnemonicError`, so select `"ton"` or `"bip39"` explicitly.
+`account_index` is part of the derivation path, not a wallet-contract
+`subwallet_id`.
+
+Use `FragmentClient.derive_wallet(...)` or
+`FragmentClient.derive_wallet_accounts(seed, count=10)` to compare public
+addresses with Keeper offline. These helpers never return private keys.
 
 ## Payment Methods
 

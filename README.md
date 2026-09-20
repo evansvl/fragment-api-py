@@ -138,6 +138,63 @@ asyncio.run(main())
 
 ---
 
+## Multichain / Keeper / Tonkeeper BIP39 wallets
+
+Keeper multichain accounts use BIP39 and hardened SLIP-0010 Ed25519 derivation at
+`m/44'/607'/{account_index}'`. The main account normally uses index `0`:
+
+```python
+import os
+from FragmentAPI import FragmentClient
+
+client = FragmentClient(
+    cookies=cookies,
+    seed=os.environ["TON_WALLET_SEED"],
+    api_key=os.environ["TON_API_KEY"],
+    wallet_version="V5R1",
+    mnemonic_type="bip39",
+    account_index=0,
+)
+
+cookies = await FragmentClient.authenticate(
+    seed=os.environ["TON_WALLET_SEED"],
+    wallet_version="V5R1",
+    mnemonic_type="bip39",
+    account_index=0,
+    phone="+79991234567",
+    print_qr=False,
+)
+```
+
+`mnemonic_type="auto"` treats valid 12-word phrases as BIP39. For 24 words it
+validates both TON-native and BIP39 formats; if both are valid, select `"ton"`
+or `"bip39"` explicitly. Existing TON-native wallets keep their TON KDF.
+`account_index` is the derivation-path account and is unrelated to a TON
+`subwallet_id`.
+
+You can compare addresses with Keeper entirely offline (private keys are never
+returned):
+
+```python
+wallet = FragmentClient.derive_wallet(
+    seed=os.environ["TON_WALLET_SEED"],
+    mnemonic_type="bip39",
+    account_index=0,
+    wallet_version="V5R1",
+)
+print(wallet.address, wallet.public_key)
+
+accounts = FragmentClient.derive_wallet_accounts(
+    os.environ["TON_WALLET_SEED"], count=10
+)
+```
+
+If index `0` does not match Keeper, list successive indexes and compare only
+their public addresses. The utility `scripts/derive_wallet.py --scan 10` reads
+the mnemonic from `TON_WALLET_SEED` or a hidden prompt, never from argv.
+
+---
+
 ## Session Storage
 
 Persist cookies across restarts:
